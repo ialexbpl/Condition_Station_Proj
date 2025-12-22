@@ -2,17 +2,19 @@
 #include <Wire.h>
 #include <U8x8lib.h>
 #include <DHT20.h>
+#include "Seeed_BMP280.h"
 
 DHT20 dht20;
+BMP280 bmp280;
 U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(U8X8_PIN_NONE);
 
 const int buttonPin = 6;
+const int potPin = A0;
 
-// stany
-bool showMeasure = false;
+int selected = 0;
+bool inMeasure = false;
+
 bool lastButton = LOW;
-
-// proste opóźnienie przycisku
 unsigned long lastButtonTime = 0;
 unsigned long buttonDelay = 200;
 
@@ -23,35 +25,55 @@ void printPaddedFloat(uint8_t col, uint8_t row, float val, uint8_t decimals, uin
   u8x8.print(val, decimals);
 }
 
-// -------- MENU --------
 void drawMenu() {
   u8x8.clearDisplay();
-  u8x8.setCursor(2, 3);
-  u8x8.print("POMIAR KLIMATU");
+  if (selected == 0) {
+    u8x8.setCursor(0, 2);
+    u8x8.print("> POMIAR KLIMATU");
+    u8x8.setCursor(0, 4);
+    u8x8.print("  CISNIENIE");
+  } else {
+    u8x8.setCursor(0, 2);
+    u8x8.print("  POMIAR KLIMATU");
+    u8x8.setCursor(0, 4);
+    u8x8.print("> CISNIENIE");
+  }
 }
 
-void drawMeasureLayout() {
+void drawClimateLayout() {
   u8x8.clearDisplay();
-  u8x8.setCursor(0, 0);
+  u8x8.setCursor(1, 0);
   u8x8.print("POMIAR KLIMATU");
-
   u8x8.setCursor(0, 2);
-  u8x8.print("Temp: ");
+  u8x8.print("Temp:");
   u8x8.setCursor(0, 4);
-  u8x8.print("Humi: ");
-
+  u8x8.print("Wilg:");
   u8x8.setCursor(14, 2);
   u8x8.print("C");
   u8x8.setCursor(14, 4);
   u8x8.print("%");
+  u8x8.setCursor(0, 6);
+  u8x8.print("Status: ----   ");
+}
+
+void drawPressureLayout() {
+  u8x8.clearDisplay();
+  u8x8.setCursor(3, 0);
+  u8x8.print("CISNIENIE");
+  u8x8.setCursor(0, 2);
+  u8x8.print("hPa:");
+  u8x8.setCursor(0, 4);
+  u8x8.print("Status: ----   ");
 }
 
 void setup() {
   Serial.begin(9600);
   Wire.begin();
   dht20.begin();
+  bmp280.init();
 
   pinMode(buttonPin, INPUT);
+  pinMode(potPin, INPUT);
 
   u8x8.begin();
   u8x8.setPowerSave(0);
@@ -61,19 +83,18 @@ void setup() {
   drawMenu();
 }
 
-
 void loop() {
-
   bool button = digitalRead(buttonPin);
 
   if (button == HIGH && lastButton == LOW &&
       millis() - lastButtonTime > buttonDelay) {
 
     lastButtonTime = millis();
-    showMeasure = !showMeasure;
+    inMeasure = !inMeasure;
 
-    if (showMeasure) {
-      drawMeasureLayout();
+    if (inMeasure) {
+      if (selected == 0) drawClimateLayout();
+      else drawPressureLayout();
     } else {
       drawMenu();
     }
@@ -81,24 +102,38 @@ void loop() {
 
   lastButton = button;
 
-  if (showMeasure) {
+  if (!inMeasure) {
+    int pot = analogRead(potPin);
+    int newSelected = (pot > 512) ? 1 : 0;
+    if (newSelected != selected) {
+      selected = newSelected;
+      drawMenu();
+    }
+    delay(50);
+    return;
+  }
+
+  if (selected == 0) {
     int status = dht20.read();
-
     if (status == 0) {
-      float temp = dht20.getTemperature();
-      float humi = dht20.getHumidity();
-
-      printPaddedFloat(6, 2, temp, 1, 7);
-      printPaddedFloat(6, 4, humi, 1, 7);
-
+      printPaddedFloat(6, 2, dht20.getTemperature(), 1, 7);
+      printPaddedFloat(6, 4, dht20.getHumidity(), 1, 7);
       u8x8.setCursor(0, 6);
       u8x8.print("Status: OK     ");
     } else {
-      u8x8.setCursor(6, 2);
-      u8x8.print("BLAD   ");
-      u8x8.setCursor(6, 4);
-      u8x8.print("BLAD   ");
       u8x8.setCursor(0, 6);
+      u8x8.print("Status: BLAD   ");
+    }
+  } else {
+    float pressure = bmp280.getPressure() / 100.0;
+    if (pressure > 0) {
+      printPaddedFloat(4, 2, pressure, 0, 9);
+      u8x8.setCursor(0, 4);
+      u8x8.print("Status: OK     ");
+    } else {
+      u8x8.setCursor(4, 2);
+      u8x8.print("BLAD    ");
+      u8x8.setCursor(0, 4);
       u8x8.print("Status: BLAD   ");
     }
   }
