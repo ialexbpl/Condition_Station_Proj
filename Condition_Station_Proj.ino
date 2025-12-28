@@ -3,9 +3,12 @@
 #include <U8x8lib.h>
 #include <DHT20.h>
 #include "Seeed_BMP280.h"
+#include <RTClib.h>
 
 DHT20 dht20;
 BMP280 bmp280;
+RTC_DS1307 rtc;
+
 U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(U8X8_PIN_NONE);
 
 const int buttonPin = 6;
@@ -25,19 +28,29 @@ void printPaddedFloat(uint8_t col, uint8_t row, float val, uint8_t decimals, uin
   u8x8.print(val, decimals);
 }
 
+
+void clearLineFrom(uint8_t row, uint8_t startCol) {
+  u8x8.setCursor(startCol, row);
+  for (uint8_t i = startCol; i < 16; i++) u8x8.print(' ');
+}
+
+bool rtcPresent() {
+  Wire.beginTransmission(0x68);
+  return (Wire.endTransmission() == 0);
+}
+
+
 void drawMenu() {
   u8x8.clearDisplay();
-  if (selected == 0) {
-    u8x8.setCursor(0, 2);
-    u8x8.print("> POMIAR KLIMATU");
-    u8x8.setCursor(0, 4);
-    u8x8.print("  CISNIENIE");
-  } else {
-    u8x8.setCursor(0, 2);
-    u8x8.print("  POMIAR KLIMATU");
-    u8x8.setCursor(0, 4);
-    u8x8.print("> CISNIENIE");
-  }
+
+  u8x8.setCursor(0, 1);
+  u8x8.print(selected == 0 ? "> POMIAR KLIMATU" : "  POMIAR KLIMATU");
+
+  u8x8.setCursor(0, 3);
+  u8x8.print(selected == 1 ? "> CISNIENIE" : "  CISNIENIE");
+
+  u8x8.setCursor(0, 5);
+  u8x8.print(selected == 2 ? "> ZEGAR (RTC)" : "  ZEGAR (RTC)");
 }
 
 void drawClimateLayout() {
@@ -66,11 +79,27 @@ void drawPressureLayout() {
   u8x8.print("Status: ----   ");
 }
 
+void drawRtcLayout() {
+  u8x8.clearDisplay();
+  u8x8.setCursor(5, 0);
+  u8x8.print("ZEGAR");
+
+  u8x8.setCursor(0, 2);
+  u8x8.print("Godz:");
+  u8x8.setCursor(0, 4);
+  u8x8.print("Data:");
+
+  u8x8.setCursor(0, 6);
+  u8x8.print("Status: ----   ");
+}
+
+
 void setup() {
   Serial.begin(9600);
   Wire.begin();
   dht20.begin();
   bmp280.init();
+  rtc.begin();
 
   pinMode(buttonPin, INPUT);
   pinMode(potPin, INPUT);
@@ -94,7 +123,8 @@ void loop() {
 
     if (inMeasure) {
       if (selected == 0) drawClimateLayout();
-      else drawPressureLayout();
+      else if (selected == 1) drawPressureLayout();
+      else drawRtcLayout();
     } else {
       drawMenu();
     }
@@ -104,7 +134,10 @@ void loop() {
 
   if (!inMeasure) {
     int pot = analogRead(potPin);
-    int newSelected = (pot > 512) ? 1 : 0;
+    int newSelected = 0;
+    if (pot > 682) newSelected = 2;
+    else if (pot > 341) newSelected = 1;
+    else newSelected = 0;
     if (newSelected != selected) {
       selected = newSelected;
       drawMenu();
@@ -124,17 +157,59 @@ void loop() {
       u8x8.setCursor(0, 6);
       u8x8.print("Status: BLAD   ");
     }
-  } else {
+  }
+  else if (selected == 1) {
     float pressure = bmp280.getPressure() / 100.0;
     if (pressure > 0) {
       printPaddedFloat(4, 2, pressure, 0, 9);
       u8x8.setCursor(0, 4);
       u8x8.print("Status: OK     ");
     } else {
+      clearLineFrom(2, 4);
       u8x8.setCursor(4, 2);
-      u8x8.print("BLAD    ");
+      u8x8.print("BLAD");
       u8x8.setCursor(0, 4);
       u8x8.print("Status: BLAD   ");
+    }
+  }
+  else {
+    const uint8_t valueCol = 6;
+    if (!rtcPresent()) {
+      u8x8.setCursor(0, 6);
+      u8x8.print("Status: BLAD   ");
+
+      clearLineFrom(2, valueCol);
+      u8x8.setCursor(valueCol, 2);
+      u8x8.print("--:--:--");
+
+      clearLineFrom(4, valueCol);
+      u8x8.setCursor(valueCol, 4);
+      u8x8.print("--.--.----");
+    }
+    else {
+      if (!rtc.isrunning()) {
+        u8x8.setCursor(0, 6);
+        u8x8.print("Status: USTAW  ");
+      } else {
+        u8x8.setCursor(0, 6);
+        u8x8.print("Status: OK     ");
+      }
+
+      DateTime now = rtc.now();
+
+      char tbuf[17];
+      char dbuf[17];
+
+      snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+      snprintf(dbuf, sizeof(dbuf), "%02d.%02d.%04d", now.day(), now.month(), now.year());
+
+      clearLineFrom(2, valueCol);
+      u8x8.setCursor(valueCol, 2);
+      u8x8.print(tbuf);
+
+      clearLineFrom(4, valueCol);
+      u8x8.setCursor(valueCol, 4);
+      u8x8.print(dbuf);
     }
   }
 
