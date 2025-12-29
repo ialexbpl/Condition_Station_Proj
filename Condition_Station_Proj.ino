@@ -15,6 +15,7 @@ const int buttonPin = 6;
 const int potPin = A0;
 const int buzzerPin = 5;
 const int lightPin = A6;
+const int ledPin = 3;  // D3 obsluguje PWM (plynna jasnosc)
 
 int selected = 0;
 bool inMeasure = false;
@@ -68,7 +69,6 @@ const int menuCount = 5;
 void drawMenu() {
   u8x8.clearDisplay();
 
-<<<<<<< HEAD
   int startIdx = 0;
   if (selected > 3) startIdx = selected - 3;
 
@@ -82,19 +82,6 @@ void drawMenu() {
     }
     u8x8.print(menuItems[idx]);
   }
-=======
-  u8x8.setCursor(0, 1);
-  u8x8.print(selected == 0 ? "> POMIAR KLIMATU" : "  POMIAR KLIMATU");
-
-  u8x8.setCursor(0, 3);
-  u8x8.print(selected == 1 ? "> CISNIENIE" : "  CISNIENIE");
-
-  u8x8.setCursor(0, 5);
-  u8x8.print(selected == 2 ? "> ZEGAR (RTC)" : "  ZEGAR (RTC)");
-
-  u8x8.setCursor(0, 7);
-  u8x8.print(selected == 3 ? "> JASNOSC OLED" : "  JASNOSC OLED");
->>>>>>> 9fe9dee146ebcd9c87e888dcde3fb0b5882b3e18
 }
 
 void drawClimateLayout() {
@@ -145,7 +132,6 @@ void drawBrightnessLayout() {
   lastPotRaw = analogRead(potPin);
 }
 
-<<<<<<< HEAD
 void drawLightLayout() {
   u8x8.clearDisplay();
   u8x8.setCursor(1, 0);
@@ -156,8 +142,6 @@ void drawLightLayout() {
   u8x8.print("Poziom:");
 }
 
-=======
->>>>>>> 9fe9dee146ebcd9c87e888dcde3fb0b5882b3e18
 void drawBrightnessBar(uint8_t percent) {
   const uint8_t barLen = 12;
   uint8_t filled = (uint16_t)percent * barLen / 100;
@@ -193,7 +177,9 @@ void setup() {
   pinMode(potPin, INPUT);
   pinMode(lightPin, INPUT);
   pinMode(buzzerPin, OUTPUT);
+  pinMode(ledPin, OUTPUT);
   noTone(buzzerPin);
+  analogWrite(ledPin, 0);
 
   u8x8.begin();
   u8x8.setPowerSave(0);
@@ -216,13 +202,10 @@ void loop() {
       if (selected == 0) drawClimateLayout();
       else if (selected == 1) drawPressureLayout();
       else if (selected == 2) drawRtcLayout();
-<<<<<<< HEAD
       else if (selected == 3) drawBrightnessLayout();
       else if (selected == 4) drawLightLayout();
-=======
-      else drawBrightnessLayout();
->>>>>>> 9fe9dee146ebcd9c87e888dcde3fb0b5882b3e18
     } else {
+      analogWrite(ledPin, 0);  // wylacz LED przy wyjsciu
       drawMenu();
     }
   }
@@ -231,16 +214,8 @@ void loop() {
 
   if (!inMeasure) {
     int pot = analogRead(potPin);
-<<<<<<< HEAD
     int newSelected = map(pot, 0, 1023, 0, menuCount - 1);
     newSelected = constrain(newSelected, 0, menuCount - 1);
-=======
-    int newSelected = 0;
-    if (pot > 767) newSelected = 3;
-    else if (pot > 511) newSelected = 2;
-    else if (pot > 255) newSelected = 1;
-    else newSelected = 0;
->>>>>>> 9fe9dee146ebcd9c87e888dcde3fb0b5882b3e18
     if (newSelected != selected) {
       selected = newSelected;
       drawMenu();
@@ -252,11 +227,7 @@ void loop() {
   if (selected == 3) {
     int potRaw = analogRead(potPin);
     if (!brightnessMoved) {
-<<<<<<< HEAD
-      if (abs(potRaw - lastPotRaw) >= 8) brightnessMoved = true;
-=======
       if (abs(potRaw - lastPotRaw) >= 😎 brightnessMoved = true;
->>>>>>> 9fe9dee146ebcd9c87e888dcde3fb0b5882b3e18
       drawBrightnessBar(currentPercentFromContrast());
       delay(50);
       return;
@@ -277,10 +248,15 @@ void loop() {
     return;
   }
 
-<<<<<<< HEAD
   if (selected == 4) {
     int lightVal = analogRead(lightPin);
-    uint8_t lightPercent = map(lightVal, 0, 775, 0, 100);
+    int lightPercent = map(lightVal, 0, 775, 0, 100);
+    lightPercent = constrain(lightPercent, 0, 100);
+
+    // LED jasniej gdy ciemniej (odwrocone)
+    int ledBrightness = map(lightVal, 0, 775, 255, 0);
+    ledBrightness = constrain(ledBrightness, 0, 255);
+    analogWrite(ledPin, ledBrightness);
 
     u8x8.setCursor(9, 2);
     u8x8.print("      ");
@@ -307,8 +283,6 @@ void loop() {
     return;
   }
 
-=======
->>>>>>> 9fe9dee146ebcd9c87e888dcde3fb0b5882b3e18
   if (selected == 0) {
     int status = dht20.read();
     if (status == 0) {
