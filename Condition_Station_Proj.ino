@@ -25,6 +25,11 @@ unsigned long buttonDelay = 200;
 unsigned long lastBeepTime = 0;
 const unsigned long beepCooldown = 3000;
 
+uint8_t currentContrast = 120;
+
+bool brightnessMoved = false;
+int lastPotRaw = 0;
+
 void beepError() {
   if (millis() - lastBeepTime < beepCooldown) return;
   lastBeepTime = millis();
@@ -52,12 +57,18 @@ bool rtcPresent() {
 
 void drawMenu() {
   u8x8.clearDisplay();
+
   u8x8.setCursor(0, 1);
   u8x8.print(selected == 0 ? "> POMIAR KLIMATU" : "  POMIAR KLIMATU");
+
   u8x8.setCursor(0, 3);
   u8x8.print(selected == 1 ? "> CISNIENIE" : "  CISNIENIE");
+
   u8x8.setCursor(0, 5);
   u8x8.print(selected == 2 ? "> ZEGAR (RTC)" : "  ZEGAR (RTC)");
+
+  u8x8.setCursor(0, 7);
+  u8x8.print(selected == 3 ? "> JASNOSC OLED" : "  JASNOSC OLED");
 }
 
 void drawClimateLayout() {
@@ -98,20 +109,58 @@ void drawRtcLayout() {
   u8x8.print("Status: ----   ");
 }
 
+void drawBrightnessLayout() {
+  u8x8.clearDisplay();
+  u8x8.setCursor(2, 0);
+  u8x8.print("JASNOSC OLED");
+  u8x8.setCursor(0, 2);
+  u8x8.print("Poziom:");
+  brightnessMoved = false;
+  lastPotRaw = analogRead(potPin);
+}
+
+void drawBrightnessBar(uint8_t percent) {
+  const uint8_t barLen = 12;
+  uint8_t filled = (uint16_t)percent * barLen / 100;
+
+  u8x8.setCursor(0, 4);
+  u8x8.print("      ");
+  u8x8.setCursor(0, 4);
+  if (percent < 100) u8x8.print(' ');
+  if (percent < 10) u8x8.print(' ');
+  u8x8.print((int)percent);
+  u8x8.print("%");
+
+  u8x8.setCursor(0, 5);
+  u8x8.print("[");
+  for (uint8_t i = 0; i < barLen; i++) u8x8.print(i < filled ? '#' : '-');
+  u8x8.print("]");
+}
+
+uint8_t currentPercentFromContrast() {
+  uint16_t y = (uint16_t)currentContrast * 255;
+  uint8_t x = (uint8_t)sqrt((double)y);
+  return map(x, 0, 255, 0, 100);
+}
+
 void setup() {
   Serial.begin(9600);
   Wire.begin();
   dht20.begin();
   bmp280.init();
   rtc.begin();
+
   pinMode(buttonPin, INPUT);
   pinMode(potPin, INPUT);
   pinMode(buzzerPin, OUTPUT);
   noTone(buzzerPin);
+
   u8x8.begin();
   u8x8.setPowerSave(0);
   u8x8.setFlipMode(1);
   u8x8.setFont(u8x8_font_chroma48medium8_r);
+  u8x8.setContrast(currentContrast);
+
   drawMenu();
 }
 
@@ -126,7 +175,8 @@ void loop() {
     if (inMeasure) {
       if (selected == 0) drawClimateLayout();
       else if (selected == 1) drawPressureLayout();
-      else drawRtcLayout();
+      else if (selected == 2) drawRtcLayout();
+      else drawBrightnessLayout();
     } else {
       drawMenu();
     }
@@ -137,13 +187,38 @@ void loop() {
   if (!inMeasure) {
     int pot = analogRead(potPin);
     int newSelected = 0;
-    if (pot > 682) newSelected = 2;
-    else if (pot > 341) newSelected = 1;
+    if (pot > 767) newSelected = 3;
+    else if (pot > 511) newSelected = 2;
+    else if (pot > 255) newSelected = 1;
     else newSelected = 0;
     if (newSelected != selected) {
       selected = newSelected;
       drawMenu();
     }
+    delay(50);
+    return;
+  }
+
+  if (selected == 3) {
+    int potRaw = analogRead(potPin);
+    if (!brightnessMoved) {
+      if (abs(potRaw - lastPotRaw) >= 😎 brightnessMoved = true;
+      drawBrightnessBar(currentPercentFromContrast());
+      delay(50);
+      return;
+    }
+
+    uint8_t percent = map(potRaw, 0, 1023, 0, 100);
+    uint8_t x = map(potRaw, 0, 1023, 0, 255);
+    uint16_t y = (uint16_t)x * x;
+    uint8_t contrast = (uint8_t)(y / 255);
+
+    if (contrast != currentContrast) {
+      currentContrast = contrast;
+      u8x8.setContrast(currentContrast);
+    }
+
+    drawBrightnessBar(percent);
     delay(50);
     return;
   }
@@ -203,9 +278,11 @@ void loop() {
       char dbuf[17];
       snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
       snprintf(dbuf, sizeof(dbuf), "%02d.%02d.%04d", now.day(), now.month(), now.year());
+
       clearLineFrom(2, valueCol);
       u8x8.setCursor(valueCol, 2);
       u8x8.print(tbuf);
+
       clearLineFrom(4, valueCol);
       u8x8.setCursor(valueCol, 4);
       u8x8.print(dbuf);
