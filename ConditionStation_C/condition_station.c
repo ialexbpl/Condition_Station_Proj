@@ -11,6 +11,8 @@
 
 #define TIMER_ID 1
 #define TIMER_INTERVAL 100
+#define ID_BTN_SET_ALARM 201
+#define ID_BTN_STOP_ALARM 202
 
 // Dane z czujnikow
 typedef struct {
@@ -19,13 +21,15 @@ typedef struct {
     int pressure;
     int light;
     int lightRaw;
+    int soundRaw;
+    int alarmActive;
     char time[16];
     char date[16];
 } SensorData;
 
 // Globalne zmienne
 HANDLE hSerial = INVALID_HANDLE_VALUE;
-SensorData sensorData = {0, 0, 0, 0, 0, "--:--:--", "--.--.----"};
+SensorData sensorData = {0, 0, 0, 0, 0, 0, 0, "--:--:--", "--.--.----"};
 char comPort[16] = "COM3";
 BOOL isConnected = FALSE;
 char statusText[64] = "Rozlaczono";
@@ -41,6 +45,8 @@ COLORREF COLOR_GRAY = RGB(128, 128, 128);
 
 // Kontrolki
 HWND hComboPort, hBtnConnect, hStatusLabel;
+HWND hEditHour, hEditMinute, hCheckAlarm, hComboMelody, hEditThreshold;
+HWND hBtnSetAlarm, hBtnStopAlarm, hLabelAlarmStatus, hLabelSound;
 
 // Funkcje
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -50,6 +56,8 @@ void ReadSerialData(void);
 void ParseJSON(const char* json);
 void DrawSensorData(HDC hdc, RECT* rect);
 void EnumeratePorts(HWND hCombo);
+void SendSerialCommand(const char* cmd);
+void UpdateAlarmUi(void);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     const char CLASS_NAME[] = "ConditionStationClass";
@@ -68,7 +76,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         CLASS_NAME,
         "Condition Station",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 450, 550,
+        CW_USEDEFAULT, CW_USEDEFAULT, 450, 720,
         NULL, NULL, hInstance, NULL
     );
     
@@ -115,6 +123,62 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             hStatusLabel = CreateWindowA("STATIC", "Status: Rozlaczono",
                 WS_VISIBLE | WS_CHILD | SS_CENTER,
                 0, 90, 435, 20, hwnd, NULL, NULL, NULL);
+
+            // Budzik
+            int alarmY = 540;
+            CreateWindowA("STATIC", "BUDZIK",
+                WS_VISIBLE | WS_CHILD | SS_CENTER,
+                0, alarmY, 435, 20, hwnd, NULL, NULL, NULL);
+
+            CreateWindowA("STATIC", "Godzina:",
+                WS_VISIBLE | WS_CHILD,
+                30, alarmY + 25, 60, 20, hwnd, NULL, NULL, NULL);
+            hEditHour = CreateWindowA("EDIT", "07",
+                WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_CENTER,
+                95, alarmY + 22, 28, 22, hwnd, NULL, NULL, NULL);
+            CreateWindowA("STATIC", ":",
+                WS_VISIBLE | WS_CHILD,
+                127, alarmY + 25, 8, 20, hwnd, NULL, NULL, NULL);
+            hEditMinute = CreateWindowA("EDIT", "00",
+                WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_CENTER,
+                135, alarmY + 22, 28, 22, hwnd, NULL, NULL, NULL);
+
+            hCheckAlarm = CreateWindowA("BUTTON", "Aktywny",
+                WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+                175, alarmY + 22, 80, 22, hwnd, NULL, NULL, NULL);
+
+            hBtnStopAlarm = CreateWindowA("BUTTON", "Stop",
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                265, alarmY + 22, 60, 22, hwnd, (HMENU)ID_BTN_STOP_ALARM, NULL, NULL);
+
+            CreateWindowA("STATIC", "Melodia:",
+                WS_VISIBLE | WS_CHILD,
+                30, alarmY + 55, 60, 20, hwnd, NULL, NULL, NULL);
+            hComboMelody = CreateWindowA("COMBOBOX", "",
+                WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
+                95, alarmY + 52, 60, 200, hwnd, NULL, NULL, NULL);
+            SendMessageA(hComboMelody, CB_ADDSTRING, 0, (LPARAM)"1");
+            SendMessageA(hComboMelody, CB_ADDSTRING, 0, (LPARAM)"2");
+            SendMessageA(hComboMelody, CB_ADDSTRING, 0, (LPARAM)"3");
+            SendMessageA(hComboMelody, CB_SETCURSEL, 0, 0);
+
+            CreateWindowA("STATIC", "Prog dzwieku:",
+                WS_VISIBLE | WS_CHILD,
+                170, alarmY + 55, 90, 20, hwnd, NULL, NULL, NULL);
+            hEditThreshold = CreateWindowA("EDIT", "650",
+                WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_CENTER,
+                260, alarmY + 52, 60, 22, hwnd, NULL, NULL, NULL);
+
+            hBtnSetAlarm = CreateWindowA("BUTTON", "Ustaw",
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                330, alarmY + 52, 70, 22, hwnd, (HMENU)ID_BTN_SET_ALARM, NULL, NULL);
+
+            hLabelSound = CreateWindowA("STATIC", "Dzwiek: ---",
+                WS_VISIBLE | WS_CHILD,
+                30, alarmY + 82, 140, 20, hwnd, NULL, NULL, NULL);
+            hLabelAlarmStatus = CreateWindowA("STATIC", "Alarm: OFF",
+                WS_VISIBLE | WS_CHILD,
+                200, alarmY + 82, 200, 20, hwnd, NULL, NULL, NULL);
             
             // Timer do odczytu danych
             SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL, NULL);
@@ -124,6 +188,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         case WM_TIMER:
             if (wParam == TIMER_ID && isConnected) {
                 ReadSerialData();
+                UpdateAlarmUi();
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             return 0;
@@ -145,6 +210,47 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             }
             else if (LOWORD(wParam) == 103) {  // Przycisk Odswiez
                 EnumeratePorts(hComboPort);
+            }
+            else if (LOWORD(wParam) == ID_BTN_SET_ALARM) {
+                char hourBuf[8] = {0};
+                char minuteBuf[8] = {0};
+                char threshBuf[8] = {0};
+
+                GetWindowTextA(hEditHour, hourBuf, sizeof(hourBuf));
+                GetWindowTextA(hEditMinute, minuteBuf, sizeof(minuteBuf));
+                GetWindowTextA(hEditThreshold, threshBuf, sizeof(threshBuf));
+
+                int hour = atoi(hourBuf);
+                int minute = atoi(minuteBuf);
+                int threshold = atoi(threshBuf);
+
+                if (hour < 0) hour = 0;
+                if (hour > 23) hour = 23;
+                if (minute < 0) minute = 0;
+                if (minute > 59) minute = 59;
+                if (threshold < 0) threshold = 0;
+                if (threshold > 1023) threshold = 1023;
+
+                int melodyIdx = (int)SendMessageA(hComboMelody, CB_GETCURSEL, 0, 0);
+                if (melodyIdx == CB_ERR) melodyIdx = 0;
+                int melody = melodyIdx + 1;
+
+                BOOL enabled = (SendMessageA(hCheckAlarm, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
+                char cmd[64];
+                sprintf(cmd, "ALARM;%02d;%02d;%d;%d;%d\n",
+                    hour, minute, enabled ? 1 : 0, melody, threshold);
+                SendSerialCommand(cmd);
+
+                sprintf(hourBuf, "%02d", hour);
+                sprintf(minuteBuf, "%02d", minute);
+                sprintf(threshBuf, "%d", threshold);
+                SetWindowTextA(hEditHour, hourBuf);
+                SetWindowTextA(hEditMinute, minuteBuf);
+                SetWindowTextA(hEditThreshold, threshBuf);
+            }
+            else if (LOWORD(wParam) == ID_BTN_STOP_ALARM) {
+                SendSerialCommand("STOP\n");
             }
             return 0;
             
@@ -180,9 +286,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         
         case WM_CTLCOLORSTATIC: {
             HDC hdcStatic = (HDC)wParam;
-            SetTextColor(hdcStatic, COLOR_ACCENT);
+            HWND hCtrl = (HWND)lParam;
+            if (hCtrl == hLabelAlarmStatus) {
+                SetTextColor(hdcStatic, sensorData.alarmActive ? COLOR_RED : COLOR_GREEN);
+            } else if (hCtrl == hLabelSound) {
+                SetTextColor(hdcStatic, COLOR_TEXT);
+            } else {
+                SetTextColor(hdcStatic, COLOR_ACCENT);
+            }
             SetBkColor(hdcStatic, COLOR_BG);
-            return (LRESULT)CreateSolidBrush(COLOR_BG);
+            static HBRUSH hbrBg = NULL;
+            if (!hbrBg) hbrBg = CreateSolidBrush(COLOR_BG);
+            return (LRESULT)hbrBg;
         }
         
         case WM_DESTROY:
@@ -375,6 +490,16 @@ void CloseSerialPort(void) {
         hSerial = INVALID_HANDLE_VALUE;
     }
     isConnected = FALSE;
+    sensorData.alarmActive = 0;
+    sensorData.soundRaw = 0;
+    UpdateAlarmUi();
+}
+
+void SendSerialCommand(const char* cmd) {
+    if (!isConnected || hSerial == INVALID_HANDLE_VALUE || cmd == NULL) return;
+
+    DWORD bytesWritten = 0;
+    WriteFile(hSerial, cmd, (DWORD)strlen(cmd), &bytesWritten, NULL);
 }
 
 static char serialBuffer[512] = {0};
@@ -405,6 +530,18 @@ void ReadSerialData(void) {
     }
 }
 
+void UpdateAlarmUi(void) {
+    if (hLabelAlarmStatus) {
+        SetWindowTextA(hLabelAlarmStatus, sensorData.alarmActive ? "Alarm: AKTYWNY" : "Alarm: OFF");
+    }
+
+    if (hLabelSound) {
+        char buf[64];
+        sprintf(buf, "Dzwiek: %d", sensorData.soundRaw);
+        SetWindowTextA(hLabelSound, buf);
+    }
+}
+
 void ParseJSON(const char* json) {
     // Prosty parser JSON
     char* ptr;
@@ -423,6 +560,12 @@ void ParseJSON(const char* json) {
     
     ptr = strstr(json, "\"lightRaw\":");
     if (ptr) sensorData.lightRaw = atoi(ptr + 11);
+
+    ptr = strstr(json, "\"soundRaw\":");
+    if (ptr) sensorData.soundRaw = atoi(ptr + 11);
+
+    ptr = strstr(json, "\"alarmActive\":");
+    if (ptr) sensorData.alarmActive = atoi(ptr + 14);
     
     ptr = strstr(json, "\"time\":\"");
     if (ptr) {
