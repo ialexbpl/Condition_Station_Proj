@@ -16,38 +16,24 @@ const int potPin = A0;
 const int buzzerPin = 5;
 const int lightPin = A6;
 const int ledPin = 3;
-
-
 const int ledSensePin = 4;
-
-
-unsigned long lastLedCheck = 0;
-const unsigned long ledCheckInterval = 1000;
-bool ledCableOkCached = true;
 
 int selected = 0;
 bool inMeasure = false;
 
-bool lastButton = LOW;
-unsigned long lastButtonTime = 0;
-unsigned long buttonDelay = 200;
+int potFiltered = 0;
+bool potInit = false;
+
+bool lastButtonStable = LOW;
+bool lastButtonRead = LOW;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceMs = 25;
 
 unsigned long lastBeepTime = 0;
 const unsigned long beepCooldown = 3000;
-
 bool beeping = false;
 unsigned long beepStart = 0;
 const unsigned long beepDuration = 2000;
-
-uint8_t currentContrast = 120;
-
-bool brightnessMoved = false;
-int lastPotRaw = 0;
-
-int LIGHT_RAW_MIN = 0;
-int LIGHT_RAW_MAX = 775;
-
-unsigned long lightBadSince = 0;
 
 void startBeep() {
   if (millis() - lastBeepTime < beepCooldown) return;
@@ -65,11 +51,57 @@ void updateBeep() {
   }
 }
 
+uint8_t currentContrast = 120;
+bool brightnessMoved = false;
+int lastPotRaw = 0;
+
+int LIGHT_RAW_MIN = 0;
+int LIGHT_RAW_MAX = 775;
+
+unsigned long lightBadSince = 0;
+
+unsigned long lastLightRead = 0;
+const unsigned long lightReadInterval = 100;
+
+int lightRaw = 0;
+int lightPercent = 0;
+int ledPwm = 0;
+bool lightOk = true;
+
+unsigned long lastLightScreenUpdate = 0;
+const unsigned long lightScreenInterval = 200;
+
+unsigned long lastDhtRead = 0;
+const unsigned long dhtInterval = 2000;
+float tempC = NAN;
+float humP = NAN;
+int dhtStatus = -1;
+
+unsigned long lastBmpRead = 0;
+const unsigned long bmpInterval = 1000;
+int pressureInt = 0;
+bool pressureOk = false;
+
+unsigned long lastRtcRead = 0;
+const unsigned long rtcInterval = 200;
+char timeBuf[16] = "--:--:--";
+char dateBuf[16] = "--.--.----";
+bool rtcOk = false;
+
+unsigned long lastSerialSend = 0;
+const unsigned long serialInterval = 500;
+
+bool rtcPresent() {
+  Wire.beginTransmission(0x68);
+  return (Wire.endTransmission() == 0);
+}
+
 void printPaddedFloat(uint8_t col, uint8_t row, float val, uint8_t decimals, uint8_t width) {
   u8x8.setCursor(col, row);
   for (uint8_t i = 0; i < width; i++) u8x8.print(' ');
   u8x8.setCursor(col, row);
-  u8x8.print(val, decimals);
+  if (isnan(val)) u8x8.print("--.-");
+  else u8x8.print(val, decimals);
 }
 
 void clearLineFrom(uint8_t row, uint8_t startCol) {
@@ -77,9 +109,23 @@ void clearLineFrom(uint8_t row, uint8_t startCol) {
   for (uint8_t i = startCol; i < 16; i++) u8x8.print(' ');
 }
 
-bool rtcPresent() {
-  Wire.beginTransmission(0x68);
-  return (Wire.endTransmission() == 0);
+unsigned long lastLedCheck = 0;
+const unsigned long ledCheckInterval = 1500;
+bool ledCableOk = true;
+
+bool ledCableOk_D3_to_D4(int restorePwm) {
+  pinMode(ledPin, OUTPUT);
+
+  digitalWrite(ledPin, HIGH);
+  delay(2);
+  int a = digitalRead(ledSensePin);
+
+  digitalWrite(ledPin, LOW);
+  delay(2);
+  int b = digitalRead(ledSensePin);
+
+  analogWrite(ledPin, restorePwm);
+  return (a != b);
 }
 
 const char* menuItems[] = {
@@ -100,72 +146,51 @@ void drawMenu() {
   for (int i = 0; i < 4 && (startIdx + i) < menuCount; i++) {
     int idx = startIdx + i;
     u8x8.setCursor(0, 1 + i * 2);
-    if (idx == selected) u8x8.print("> ");
-    else u8x8.print("  ");
+    u8x8.print(idx == selected ? "> " : "  ");
     u8x8.print(menuItems[idx]);
   }
 }
 
 void drawClimateLayout() {
   u8x8.clearDisplay();
-  u8x8.setCursor(1, 0);
-  u8x8.print("POMIAR KLIMATU");
-  u8x8.setCursor(0, 2);
-  u8x8.print("Temp:");
-  u8x8.setCursor(0, 4);
-  u8x8.print("Wilg:");
-  u8x8.setCursor(14, 2);
-  u8x8.print("C");
-  u8x8.setCursor(14, 4);
-  u8x8.print("%");
-  u8x8.setCursor(0, 6);
-  u8x8.print("Status: ----   ");
+  u8x8.setCursor(1, 0); u8x8.print("POMIAR KLIMATU");
+  u8x8.setCursor(0, 2); u8x8.print("Temp:");
+  u8x8.setCursor(0, 4); u8x8.print("Wilg:");
+  u8x8.setCursor(14, 2); u8x8.print("C");
+  u8x8.setCursor(14, 4); u8x8.print("%");
+  u8x8.setCursor(0, 6); u8x8.print("Status: ----   ");
 }
 
 void drawPressureLayout() {
   u8x8.clearDisplay();
-  u8x8.setCursor(3, 0);
-  u8x8.print("CISNIENIE");
-  u8x8.setCursor(0, 2);
-  u8x8.print("hPa:");
-  u8x8.setCursor(0, 4);
-  u8x8.print("Status: ----   ");
+  u8x8.setCursor(3, 0); u8x8.print("CISNIENIE");
+  u8x8.setCursor(0, 2); u8x8.print("hPa:");
+  u8x8.setCursor(0, 4); u8x8.print("Status: ----   ");
 }
 
 void drawRtcLayout() {
   u8x8.clearDisplay();
-  u8x8.setCursor(5, 0);
-  u8x8.print("ZEGAR");
-  u8x8.setCursor(0, 2);
-  u8x8.print("Godz:");
-  u8x8.setCursor(0, 4);
-  u8x8.print("Data:");
-  u8x8.setCursor(0, 6);
-  u8x8.print("Status: ----   ");
+  u8x8.setCursor(5, 0); u8x8.print("ZEGAR");
+  u8x8.setCursor(0, 2); u8x8.print("Godz:");
+  u8x8.setCursor(0, 4); u8x8.print("Data:");
+  u8x8.setCursor(0, 6); u8x8.print("Status: ----   ");
 }
 
 void drawBrightnessLayout() {
   u8x8.clearDisplay();
-  u8x8.setCursor(2, 0);
-  u8x8.print("JASNOSC OLED");
-  u8x8.setCursor(0, 2);
-  u8x8.print("Poziom:");
-  u8x8.setCursor(0, 6);
-  u8x8.print("Status: OK     ");
+  u8x8.setCursor(2, 0); u8x8.print("JASNOSC OLED");
+  u8x8.setCursor(0, 2); u8x8.print("Poziom:");
+  u8x8.setCursor(0, 6); u8x8.print("Status: OK     ");
   brightnessMoved = false;
   lastPotRaw = analogRead(potPin);
 }
 
 void drawLightLayout() {
   u8x8.clearDisplay();
-  u8x8.setCursor(3, 0);
-  u8x8.print("SWIATLO");
-  u8x8.setCursor(0, 2);
-  u8x8.print("Wartosc:");
-  u8x8.setCursor(0, 4);
-  u8x8.print("Poziom:");
-  u8x8.setCursor(0, 7);
-  u8x8.print("Status: ----   ");
+  u8x8.setCursor(3, 0); u8x8.print("SWIATLO");
+  u8x8.setCursor(0, 2); u8x8.print("Wartosc:");
+  u8x8.setCursor(0, 4); u8x8.print("Poziom:");
+  u8x8.setCursor(0, 7); u8x8.print("Status: ----   ");
 }
 
 void drawBrightnessBar(uint8_t percent) {
@@ -186,14 +211,64 @@ void drawBrightnessBar(uint8_t percent) {
   u8x8.print("]");
 }
 
-uint8_t currentPercentFromContrast() {
-  uint16_t y = (uint16_t)currentContrast * 255;
-  uint8_t x = (uint8_t)sqrt((double)y);
-  return map(x, 0, 255, 0, 100);
+int potToMenuIndex(int val) {
+  int idx = (val * menuCount) / 1024;
+  if (idx < 0) idx = 0;
+  if (idx > menuCount - 1) idx = menuCount - 1;
+  return idx;
 }
 
-bool lightSensorOk(int lightVal) {
-  if (lightVal <= 2 || lightVal >= 1021) {
+void updateMenuSelection() {
+  int raw = analogRead(potPin);
+
+  if (!potInit) {
+    potFiltered = raw;
+    potInit = true;
+  } else {
+    potFiltered = (potFiltered * 7 + raw) / 8;
+  }
+
+  int newSelected = potToMenuIndex(potFiltered);
+  if (newSelected != selected) {
+    selected = newSelected;
+    drawMenu();
+  }
+}
+
+void updateButton() {
+  bool reading = digitalRead(buttonPin);
+
+  if (reading != lastButtonRead) {
+    lastDebounceTime = millis();
+    lastButtonRead = reading;
+  }
+
+  if (millis() - lastDebounceTime >= debounceMs) {
+    if (reading != lastButtonStable) {
+      lastButtonStable = reading;
+
+      if (lastButtonStable == HIGH) {
+        inMeasure = !inMeasure;
+
+        if (inMeasure) {
+          if (selected == 0) drawClimateLayout();
+          else if (selected == 1) drawPressureLayout();
+          else if (selected == 2) drawRtcLayout();
+          else if (selected == 3) drawBrightnessLayout();
+          else if (selected == 4) drawLightLayout();
+        } else {
+          analogWrite(ledPin, 0);
+          drawMenu();
+        }
+      }
+    }
+  }
+}
+
+
+bool lightSensorOk(int v) {
+
+  if (v >= 1021) {
     if (lightBadSince == 0) lightBadSince = millis();
     if (millis() - lightBadSince > 1500) return false;
   } else {
@@ -202,46 +277,103 @@ bool lightSensorOk(int lightVal) {
   return true;
 }
 
-bool updateLightLed(int &lightValOut, int &lightPercentOut, int &ledPercentOut, int &ledPwmOut) {
-  int lightVal = analogRead(lightPin);
 
-  int lightPercent = map(lightVal, LIGHT_RAW_MIN, LIGHT_RAW_MAX, 0, 100);
+void updateLight() {
+  if (millis() - lastLightRead < lightReadInterval) return;
+  lastLightRead = millis();
+
+  lightRaw = analogRead(lightPin);
+
+  lightPercent = map(lightRaw, LIGHT_RAW_MIN, LIGHT_RAW_MAX, 0, 100);
   lightPercent = constrain(lightPercent, 0, 100);
 
   int ledPercent = 100 - lightPercent;
-  int ledBrightness = map(ledPercent, 0, 100, 0, 255);
-  ledBrightness = constrain(ledBrightness, 0, 255);
+  ledPwm = map(ledPercent, 0, 100, 0, 255);
+  ledPwm = constrain(ledPwm, 0, 255);
 
-  analogWrite(ledPin, ledBrightness);
 
-  lightValOut = lightVal;
-  lightPercentOut = lightPercent;
-  ledPercentOut = ledPercent;
-  ledPwmOut = ledBrightness;
+  analogWrite(ledPin, ledPwm);
 
-  return lightSensorOk(lightVal);
+  lightOk = lightSensorOk(lightRaw);
+
+  if (millis() - lastLedCheck >= ledCheckInterval) {
+    lastLedCheck = millis();
+    ledCableOk = ledCableOk_D3_to_D4(ledPwm);
+  }
 }
 
+void updateDht() {
+  if (millis() - lastDhtRead < dhtInterval) return;
+  lastDhtRead = millis();
 
-bool ledCableOk_D3_to_D4(int restorePwm) {
-  pinMode(ledPin, OUTPUT);
+  int st = dht20.read();
+  dhtStatus = st;
+  if (st == 0) {
+    tempC = dht20.getTemperature();
+    humP = dht20.getHumidity();
+  }
+}
 
-  digitalWrite(ledPin, HIGH);
-  delay(3);
-  int a = digitalRead(ledSensePin);
+void updateBmp() {
+  if (millis() - lastBmpRead < bmpInterval) return;
+  lastBmpRead = millis();
 
-  digitalWrite(ledPin, LOW);
-  delay(3);
-  int b = digitalRead(ledSensePin);
+  float p = bmp280.getPressure() / 100.0f;
+  if (p > 0) {
+    pressureInt = (int)(p + 0.5f);
+    pressureOk = true;
+  } else {
+    pressureOk = false;
+    pressureInt = 0;
+  }
+}
 
-  analogWrite(ledPin, restorePwm);
+void updateRtc() {
+  if (millis() - lastRtcRead < rtcInterval) return;
+  lastRtcRead = millis();
 
-  return (a != b);
+  rtcOk = (rtcPresent() && rtc.isrunning());
+  if (rtcOk) {
+    DateTime now = rtc.now();
+    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+    snprintf(dateBuf, sizeof(dateBuf), "%02d.%02d.%04d", now.day(), now.month(), now.year());
+  } else {
+    snprintf(timeBuf, sizeof(timeBuf), "%s", "--:--:--");
+    snprintf(dateBuf, sizeof(dateBuf), "%s", "--.--.----");
+  }
+}
+
+void sendSerialData() {
+  if (millis() - lastSerialSend < serialInterval) return;
+  lastSerialSend = millis();
+
+  float tempOut = tempC;
+  float humOut = humP;
+  if (tempOut != tempOut) tempOut = 0.0f;
+  if (humOut != humOut) humOut = 0.0f;
+
+  Serial.print("{\"temp\":");
+  Serial.print(tempOut, 1);
+  Serial.print(",\"hum\":");
+  Serial.print(humOut, 1);
+  Serial.print(",\"pressure\":");
+  Serial.print(pressureInt);
+  Serial.print(",\"light\":");
+  Serial.print(lightPercent);
+  Serial.print(",\"lightRaw\":");
+  Serial.print(lightRaw);
+  Serial.print(",\"time\":\"");
+  Serial.print(timeBuf);
+  Serial.print("\",\"date\":\"");
+  Serial.print(dateBuf);
+  Serial.println("\"}");
 }
 
 void setup() {
   Serial.begin(9600);
   Wire.begin();
+  Wire.setClock(100000);
+
   dht20.begin();
   bmp280.init();
   rtc.begin();
@@ -251,10 +383,10 @@ void setup() {
   pinMode(lightPin, INPUT);
   pinMode(buzzerPin, OUTPUT);
   pinMode(ledPin, OUTPUT);
-
   pinMode(ledSensePin, INPUT);
 
   noTone(buzzerPin);
+  analogWrite(ledPin, 0);
 
   u8x8.begin();
   u8x8.setPowerSave(0);
@@ -267,61 +399,104 @@ void setup() {
 
 void loop() {
   updateBeep();
+  updateButton();
 
-  int lightVal = 0, lightPercent = 0, ledPercent = 0, ledPwm = 0;
-  bool lightOk = updateLightLed(lightVal, lightPercent, ledPercent, ledPwm);
+  updateLight();
+  updateDht();
+  updateBmp();
+  updateRtc();
 
   bool errorNow = false;
-
-  bool rtcOk = rtcPresent();
   if (!rtcOk) errorNow = true;
-  else if (!rtc.isrunning()) errorNow = true;
-
+  if (!ledCableOk) errorNow = true;
   if (!lightOk) errorNow = true;
-
-  if (millis() - lastLedCheck > ledCheckInterval) {
-    lastLedCheck = millis();
-    ledCableOkCached = ledCableOk_D3_to_D4(ledPwm);
-  }
-  if (!ledCableOkCached) errorNow = true;
 
   if (errorNow) startBeep();
 
-  bool button = digitalRead(buttonPin);
-
-  if (button == HIGH && lastButton == LOW && millis() - lastButtonTime > buttonDelay) {
-    lastButtonTime = millis();
-    inMeasure = !inMeasure;
-    if (inMeasure) {
-      if (selected == 0) drawClimateLayout();
-      else if (selected == 1) drawPressureLayout();
-      else if (selected == 2) drawRtcLayout();
-      else if (selected == 3) drawBrightnessLayout();
-      else if (selected == 4) drawLightLayout();
-    } else {
-      drawMenu();
-    }
-  }
-
-  lastButton = button;
+  sendSerialData();
 
   if (!inMeasure) {
-    int pot = analogRead(potPin);
-    int newSelected = map(pot, 0, 1023, 0, menuCount - 1);
-    newSelected = constrain(newSelected, 0, menuCount - 1);
-    if (newSelected != selected) {
-      selected = newSelected;
-      drawMenu();
+    updateMenuSelection();
+    return;
+  }
+
+  if (selected == 0) {
+    printPaddedFloat(6, 2, tempC, 1, 7);
+    printPaddedFloat(6, 4, humP, 1, 7);
+    u8x8.setCursor(0, 6);
+    if (dhtStatus == 0) u8x8.print("Status: OK     ");
+    else u8x8.print("Status: BLAD   ");
+    return;
+  }
+
+  if (selected == 1) {
+    if (pressureOk) {
+      u8x8.setCursor(4, 2);
+      u8x8.print("        ");
+      u8x8.setCursor(4, 2);
+      u8x8.print(pressureInt);
+      u8x8.setCursor(0, 4);
+      u8x8.print("Status: OK     ");
+    } else {
+      u8x8.setCursor(4, 2);
+      u8x8.print("BLAD    ");
+      u8x8.setCursor(0, 4);
+      u8x8.print("Status: BLAD   ");
     }
-    delay(50);
+    return;
+  }
+
+  if (selected == 2) {
+    const uint8_t valueCol = 6;
+    u8x8.setCursor(0, 6);
+    if (rtcOk) u8x8.print("Status: OK     ");
+    else u8x8.print("Status: BLAD   ");
+
+    clearLineFrom(2, valueCol);
+    u8x8.setCursor(valueCol, 2);
+    u8x8.print(timeBuf);
+
+    clearLineFrom(4, valueCol);
+    u8x8.setCursor(valueCol, 4);
+    u8x8.print(dateBuf);
+    return;
+  }
+
+  if (selected == 3) {
+    int potRaw = analogRead(potPin);
+
+    if (!brightnessMoved) {
+      if (abs(potRaw - lastPotRaw) >= 8) brightnessMoved = true;
+      drawBrightnessBar(map(currentContrast, 0, 255, 0, 100));
+      u8x8.setCursor(0, 6);
+      u8x8.print("Status: OK     ");
+      return;
+    }
+
+    uint8_t percent = map(potRaw, 0, 1023, 0, 100);
+    uint8_t x = map(potRaw, 0, 1023, 0, 255);
+    uint16_t y = (uint16_t)x * x;
+    uint8_t contrast = (uint8_t)(y / 255);
+
+    if (contrast != currentContrast) {
+      currentContrast = contrast;
+      u8x8.setContrast(currentContrast);
+    }
+
+    drawBrightnessBar(percent);
+    u8x8.setCursor(0, 6);
+    u8x8.print("Status: OK     ");
     return;
   }
 
   if (selected == 4) {
+    if (millis() - lastLightScreenUpdate < lightScreenInterval) return;
+    lastLightScreenUpdate = millis();
+
     u8x8.setCursor(9, 2);
     u8x8.print("      ");
     u8x8.setCursor(9, 2);
-    u8x8.print(lightVal);
+    u8x8.print(lightRaw);
 
     u8x8.setCursor(8, 4);
     u8x8.print("      ");
@@ -343,108 +518,10 @@ void loop() {
     u8x8.print("]");
 
     u8x8.setCursor(0, 7);
-    if (!ledCableOkCached) u8x8.print("Status: LED?   ");
+    if (!ledCableOk) u8x8.print("Status: LED?   ");
     else if (lightOk) u8x8.print("Status: OK     ");
     else u8x8.print("Status: BLAD   ");
 
-    delay(200);
     return;
   }
-
-  if (selected == 3) {
-    int potRaw = analogRead(potPin);
-    if (!brightnessMoved) {
-      if (abs(potRaw - lastPotRaw) >= 8) brightnessMoved = true;
-      drawBrightnessBar(currentPercentFromContrast());
-      u8x8.setCursor(0, 6);
-      u8x8.print("Status: OK     ");
-      delay(50);
-      return;
-    }
-
-    uint8_t percent = map(potRaw, 0, 1023, 0, 100);
-    uint8_t x = map(potRaw, 0, 1023, 0, 255);
-    uint16_t y = (uint16_t)x * x;
-    uint8_t contrast = (uint8_t)(y / 255);
-
-    if (contrast != currentContrast) {
-      currentContrast = contrast;
-      u8x8.setContrast(currentContrast);
-    }
-
-    drawBrightnessBar(percent);
-    u8x8.setCursor(0, 6);
-    u8x8.print("Status: OK     ");
-    delay(50);
-    return;
-  }
-
-  if (selected == 0) {
-    int status = dht20.read();
-    if (status == 0) {
-      printPaddedFloat(6, 2, dht20.getTemperature(), 1, 7);
-      printPaddedFloat(6, 4, dht20.getHumidity(), 1, 7);
-      u8x8.setCursor(0, 6);
-      u8x8.print("Status: OK     ");
-    } else {
-      u8x8.setCursor(0, 6);
-      u8x8.print("Status: BLAD   ");
-      startBeep();
-    }
-  }
-  else if (selected == 1) {
-    float pressure = bmp280.getPressure() / 100.0;
-    if (pressure > 0) {
-      printPaddedFloat(4, 2, pressure, 0, 9);
-      u8x8.setCursor(0, 4);
-      u8x8.print("Status: OK     ");
-    } else {
-      clearLineFrom(2, 4);
-      u8x8.setCursor(4, 2);
-      u8x8.print("BLAD");
-      u8x8.setCursor(0, 4);
-      u8x8.print("Status: BLAD   ");
-      startBeep();
-    }
-  }
-  else if (selected == 2) {
-    const uint8_t valueCol = 6;
-    if (!rtcPresent()) {
-      u8x8.setCursor(0, 6);
-      u8x8.print("Status: BLAD   ");
-      clearLineFrom(2, valueCol);
-      u8x8.setCursor(valueCol, 2);
-      u8x8.print("--:--:--");
-      clearLineFrom(4, valueCol);
-      u8x8.setCursor(valueCol, 4);
-      u8x8.print("--.--.----");
-      startBeep();
-    }
-    else {
-      if (!rtc.isrunning()) {
-        u8x8.setCursor(0, 6);
-        u8x8.print("Status: USTAW  ");
-        startBeep();
-      } else {
-        u8x8.setCursor(0, 6);
-        u8x8.print("Status: OK     ");
-      }
-
-      DateTime now = rtc.now();
-      char tbuf[17];
-      char dbuf[17];
-      snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
-      snprintf(dbuf, sizeof(dbuf), "%02d.%02d.%04d", now.day(), now.month(), now.year());
-
-      clearLineFrom(2, valueCol);
-      u8x8.setCursor(valueCol, 2);
-      u8x8.print(tbuf);
-
-      clearLineFrom(4, valueCol);
-      u8x8.setCursor(valueCol, 4);
-      u8x8.print(dbuf);
-    }
-  }
-
-  delay(1000);
 }
