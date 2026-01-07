@@ -1,0 +1,4 @@
+Data,Czas,Temperatura,Wilgotnosc,Cisnienie,Swiatlo,LightRaw,SoundRaw,AlarmActive
+2026-01-06,00:59:24,23.6,43.7,995,6,51,72,0
+2026-01-06,01:00:24,23.6,43.2,995,6,51,87,0
+2026-01-06,01:01:24,23.6,43.5,995,6,48,51,0

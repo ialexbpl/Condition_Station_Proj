@@ -13,6 +13,7 @@
 #define TIMER_INTERVAL 100
 #define ID_BTN_SET_ALARM 201
 #define ID_BTN_STOP_ALARM 202
+#define ID_BTN_CSV_TOGGLE 301
 
 // Dane z czujnikow
 typedef struct {
@@ -47,6 +48,14 @@ COLORREF COLOR_GRAY = RGB(128, 128, 128);
 HWND hComboPort, hBtnConnect, hStatusLabel;
 HWND hEditHour, hEditMinute, hCheckAlarm, hComboMelody, hEditThreshold;
 HWND hBtnSetAlarm, hBtnStopAlarm, hLabelAlarmStatus, hLabelSound;
+HWND hBtnCsvToggle, hLabelCsvStatus;
+
+// CSV Logging
+BOOL csvRecording = FALSE;
+char csvFilePath[MAX_PATH] = {0};
+FILE* csvFile = NULL;
+DWORD lastCsvWrite = 0;
+const DWORD csvIntervalMs = 60000;  // 1 minuta
 
 // Funkcje
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
@@ -58,6 +67,10 @@ void DrawSensorData(HDC hdc, RECT* rect);
 void EnumeratePorts(HWND hCombo);
 void SendSerialCommand(const char* cmd);
 void UpdateAlarmUi(void);
+void StartCsvRecording(void);
+void StopCsvRecording(void);
+void WriteCsvLine(void);
+void UpdateCsvRecording(void);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     const char CLASS_NAME[] = "ConditionStationClass";
@@ -76,7 +89,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         CLASS_NAME,
         "Condition Station",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 450, 720,
+        CW_USEDEFAULT, CW_USEDEFAULT, 450, 780,
         NULL, NULL, hInstance, NULL
     );
     
@@ -179,6 +192,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             hLabelAlarmStatus = CreateWindowA("STATIC", "Alarm: OFF",
                 WS_VISIBLE | WS_CHILD,
                 200, alarmY + 82, 200, 20, hwnd, NULL, NULL, NULL);
+
+            // CSV Recording
+            int csvY = alarmY + 110;
+            CreateWindowA("STATIC", "CSV LOG",
+                WS_VISIBLE | WS_CHILD | SS_CENTER,
+                0, csvY, 435, 20, hwnd, NULL, NULL, NULL);
+            
+            hBtnCsvToggle = CreateWindowA("BUTTON", "Start CSV",
+                WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                30, csvY + 25, 100, 25, hwnd, (HMENU)ID_BTN_CSV_TOGGLE, NULL, NULL);
+            
+            hLabelCsvStatus = CreateWindowA("STATIC", "Status: Zatrzymany",
+                WS_VISIBLE | WS_CHILD,
+                145, csvY + 28, 280, 20, hwnd, NULL, NULL, NULL);
             
             // Timer do odczytu danych
             SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL, NULL);
@@ -189,6 +216,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             if (wParam == TIMER_ID && isConnected) {
                 ReadSerialData();
                 UpdateAlarmUi();
+                UpdateCsvRecording();
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             return 0;
@@ -252,6 +280,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             else if (LOWORD(wParam) == ID_BTN_STOP_ALARM) {
                 SendSerialCommand("STOP\n");
             }
+            else if (LOWORD(wParam) == ID_BTN_CSV_TOGGLE) {
+                if (csvRecording) {
+                    StopCsvRecording();
+                } else {
+                    StartCsvRecording();
+                }
+            }
             return 0;
             
         case WM_PAINT: {
@@ -302,6 +337,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         
         case WM_DESTROY:
             KillTimer(hwnd, TIMER_ID);
+            StopCsvRecording();
             CloseSerialPort();
             PostQuitMessage(0);
             return 0;
@@ -587,6 +623,89 @@ void ParseJSON(const char* json) {
         sensorData.date[i] = '\0';
     }
 }
+
+// ==================== CSV LOGGING ====================
+
+void StartCsvRecording(void) {
+    if (csvRecording) return;
+    
+    // Utworz nazwe pliku z data i czasem
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    sprintf(csvFilePath, "log_%04d-%02d-%02d_%02d-%02d-%02d.csv",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    
+    // Otworz plik i zapisz naglowek
+    csvFile = fopen(csvFilePath, "w");
+    if (csvFile == NULL) {
+        MessageBoxA(NULL, "Nie mozna utworzyc pliku CSV!", "Blad", MB_OK | MB_ICONERROR);
+        return;
+    }
+    
+    fprintf(csvFile, "Data,Czas,Temperatura,Wilgotnosc,Cisnienie,Swiatlo,LightRaw,SoundRaw,AlarmActive\n");
+    fflush(csvFile);
+    
+    csvRecording = TRUE;
+    lastCsvWrite = GetTickCount();
+    
+    // Aktualizuj UI
+    SetWindowTextA(hBtnCsvToggle, "Stop CSV");
+    char status[256];
+    sprintf(status, "Nagrywanie: %s", csvFilePath);
+    SetWindowTextA(hLabelCsvStatus, status);
+    
+    // Zapisz pierwszy wiersz od razu
+    WriteCsvLine();
+}
+
+void StopCsvRecording(void) {
+    if (!csvRecording) return;
+    
+    if (csvFile != NULL) {
+        fclose(csvFile);
+        csvFile = NULL;
+    }
+    
+    csvRecording = FALSE;
+    
+    // Aktualizuj UI
+    SetWindowTextA(hBtnCsvToggle, "Start CSV");
+    char status[256];
+    sprintf(status, "Zapisano: %s", csvFilePath);
+    SetWindowTextA(hLabelCsvStatus, status);
+}
+
+void WriteCsvLine(void) {
+    if (!csvRecording || csvFile == NULL) return;
+    
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    
+    fprintf(csvFile, "%04d-%02d-%02d,%02d:%02d:%02d,%.1f,%.1f,%d,%d,%d,%d,%d\n",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond,
+        sensorData.temp,
+        sensorData.hum,
+        sensorData.pressure,
+        sensorData.light,
+        sensorData.lightRaw,
+        sensorData.soundRaw,
+        sensorData.alarmActive);
+    
+    fflush(csvFile);
+}
+
+void UpdateCsvRecording(void) {
+    if (!csvRecording) return;
+    
+    DWORD now = GetTickCount();
+    if (now - lastCsvWrite >= csvIntervalMs) {
+        lastCsvWrite = now;
+        WriteCsvLine();
+    }
+}
+
+// =======================================================
 
 /*
  * Created by : Jakub Aposte, Alexander Buczek, Miłosz Dobrowolski 
